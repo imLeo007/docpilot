@@ -2,7 +2,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
-from sqlalchemy import select, insert
+from sqlalchemy import select, insert, update
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,30 +13,35 @@ from app.models.chunks import Chunks
 from app.schemas.retriever import RetrievedChunks
 
 
-async def save_document_with_chunks(
+async def save_document(
     db: AsyncSession,
     filename: str,
     category: str,
-    chunks: list[RetrievedChunks],
-    embeddings: Any,
 ) -> Document:
-    if len(chunks) != len(embeddings):
-        raise ValueError("Chunks and embeddings length mismatch.")
-
-    document = Document(filename=filename, category=category)
+    document = Document(
+        filename=filename,
+        category=category,
+        status="processing",
+    )
 
     db.add(document)
 
-    await db.flush()
+    await db.commit()
 
-    if not chunks:
-        await db.commit()
+    return document
 
-        return document
+async def save_document_with_chunks(
+    db: AsyncSession,
+    document_id: int,
+    chunks: list[RetrievedChunks],
+    embeddings: Any,
+) -> None:
+    if len(chunks) != len(embeddings):
+        raise ValueError("Chunks and embeddings length mismatch.")
 
     chunk_records = [
         {
-            "document_id": document.id,
+            "document_id": document_id,
             "chunk_index": idx,
             "page_no": chunk.get("page_no"),
             "headings": chunk.get("headings"),
@@ -48,11 +53,27 @@ async def save_document_with_chunks(
 
     await db.execute(insert(Chunks).values(chunk_records))
 
+    await db.execute(
+        update(Document).where(
+            Document.id == document_id,
+        ).values(status="ready", error_message=None)
+    )
+
     await db.commit()
-    
-    await db.refresh(document)
-    
-    return document
+
+
+async def mark_failed(
+    db: AsyncSession,
+    document_id: int,
+    error_message: str,
+) -> None:
+    await db.execute(
+        update(Document).where(
+            Document.id == document_id
+        ).values(status="failed", error_message=error_message)
+    )
+
+    await db.commit()
 
 
 async def get_document_by_id(db: AsyncSession, document_id: int) -> Document:

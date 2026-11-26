@@ -12,7 +12,7 @@ import os
 
 from app.services.chunker import chunk_document
 
-from app.services.document import save_document_with_chunks, get_document_chunks, get_document_by_id, get_all_documents, delete_document
+from app.services.document import save_document_with_chunks, get_document_chunks, get_document_by_id, get_all_documents, delete_document, save_document, mark_failed
 
 from app.ai.embedding import create_embeddings
 
@@ -37,8 +37,7 @@ FormSession = Annotated[str, Form(...)]
 
 async def process_backgroundtask(
     file_path: str,
-    filename: str,
-    category: str,
+    document_id: int
 ) -> None:
     try:
         document = extract_document(file_path=file_path)
@@ -46,6 +45,9 @@ async def process_backgroundtask(
         chunks = chunk_document(document=document)
 
         if not chunks:
+            async with AsyncSessionLocal() as db:
+                await mark_failed(db=db, document_id=document_id, error_message="No extractable text found (scanned without OCR)")
+
             return
 
         chunks_text = [chunk["text"] for chunk in chunks]
@@ -55,10 +57,17 @@ async def process_backgroundtask(
         async with AsyncSessionLocal() as db:
             await save_document_with_chunks(
                 db=db,
-                filename=filename,
-                category=category,
+                document_id=document_id,
                 embeddings=embeddings,
                 chunks=chunks,
+            )
+
+    except Exception as exc:
+        async with AsyncSessionLocal() as db:
+            await mark_failed(
+                db=db,
+                document_id=document_id,
+                error_message=str(exc),
             )
 
     finally:
@@ -69,6 +78,7 @@ async def process_backgroundtask(
 
 @router.post("/upload", response_model=DocumentUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
+    db: DBSession,
     background_tasks: BackgroundTasks,
     file: FileSession,
     category: FormSession,
@@ -87,15 +97,22 @@ async def upload_document(
 
     file_path = save_pdf(file=file, upload_dir=DIR)
 
+    document = await save_document(
+        filename=file.filename,
+        category=category,
+        db=db,
+    )
+
     background_tasks.add_task(
         process_backgroundtask,
         file_path=file_path,
-        filename=file.filename,
-        category=category
+        document_id=document.id,
     )
 
     return DocumentUploadResponse(
         message="Document was uploaded and is being processed in background.",
+        id=document.id,
+        status=document.status,
         filename=file.filename,
         category=category
     )
@@ -119,6 +136,8 @@ async def get_document(db: DBSession, document_id: int) -> DocumentDetailRespons
         id=document.id,
         filename=document.filename,
         category=document.category,
+        status=document.status,
+        error_message=document.error_message,
         created_at=document.created_at,
         total_chunks=len(chunks),
     )

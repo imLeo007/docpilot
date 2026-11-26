@@ -32,6 +32,19 @@ class Document(Base):
         index=True,
     )
 
+    status: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="processing",
+        server_default="processing",
+        index=True,
+    )
+
+    error_message: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
